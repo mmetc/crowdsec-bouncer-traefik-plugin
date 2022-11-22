@@ -93,6 +93,18 @@ make run
   - string 
   - default: []
   - List of client IPs we trust, they will bypass any more check to the bouncer or cache (usefull for LAN or VPN IP)
+- TLSCert
+  - string
+  - default: ""
+  - Path to a file containing the TLS client certificate
+- TLSKey
+  - string
+  - default: ""
+  - Path to a file containing the TLS client key
+- TLSCaCert
+  - string
+  - default: ""
+  - Path to a file containing the CA certificate
 
 ### Configuration
 

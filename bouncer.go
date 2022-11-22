@@ -5,11 +5,14 @@ package crowdsec_bouncer_traefik_plugin //nolint:revive,stylecheck
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"text/template"
 	"time"
 
@@ -50,6 +53,9 @@ type Config struct {
 	ClientTrustedIPs           []string `json:"clientTrustedIps,omitempty"`
 	RedisCacheEnabled          bool     `json:"redisCacheEnabled,omitempty"`
 	RedisCacheHost             string   `json:"redisCacheHost,omitempty"`
+	TLSCaCert                  string   `json:"tlsCaCert,omitempty"`
+	TLSCert                    string   `json:"tlsCert,omitempty"`
+	TLSKey                     string   `json:"tlsKey,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -68,6 +74,9 @@ func CreateConfig() *Config {
 		ForwardedHeadersCustomName: "X-Forwarded-For",
 		RedisCacheEnabled:          false,
 		RedisCacheHost:             "redis:6379",
+		TLSCaCert:                  "",
+		TLSCert:                    "",
+		TLSKey:                     "",
 	}
 }
 
@@ -90,6 +99,48 @@ type Bouncer struct {
 	client                 *http.Client
 }
 
+func tlsConfig(config *Config) (*tls.Config, error) {
+	if config.TLSCert == "" && config.TLSKey == "" {
+		//nolint: nilnil
+		return nil, nil
+	}
+
+	// Client certificate
+	if config.TLSCert != "" && config.TLSKey == "" {
+		return nil, fmt.Errorf("tlsKey is not set")
+	}
+
+	if config.TLSCert == "" && config.TLSKey != "" {
+		return nil, fmt.Errorf("tlsCert is not set")
+	}
+
+	cert, err := tls.LoadX509KeyPair(config.TLSCert, config.TLSKey)
+	if err != nil {
+		return nil, fmt.Errorf("could not load client certificate: %w", err)
+	}
+
+	ret := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	}
+
+	// CA certificate
+	if config.TLSCaCert != "" {
+		caCert, err := os.ReadFile(config.TLSCaCert)
+		if err != nil {
+			return nil, fmt.Errorf("could not read CA certificate: %w", err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+			return nil, fmt.Errorf("could not append CA certificate")
+		}
+		ret.RootCAs = caCertPool
+	}
+
+	return ret, nil
+}
+
 // New creates the crowdsec bouncer plugin.
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	logger.Init(config.LogLevel)
@@ -101,6 +152,11 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 
 	serverChecker, _ := ip.NewChecker(config.ForwardedHeadersTrustedIPs)
 	clientChecker, _ := ip.NewChecker(config.ClientTrustedIPs)
+
+	tlsClientConfig, err := tlsConfig(config)
+	if err != nil {
+		return nil, err
+	}
 
 	bouncer := &Bouncer{
 		next:     next,
@@ -125,6 +181,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			Transport: &http.Transport{
 				MaxIdleConns:    10,
 				IdleConnTimeout: 30 * time.Second,
+				TLSClientConfig: tlsClientConfig,
 			},
 			Timeout: 2 * time.Second,
 		},
